@@ -1,7 +1,7 @@
 // frontend/src/components/Login.js
 import React, { useState } from 'react';
 
-const API_URL = process.env.APIURL;
+const API_URL = process.env.APIURL || "http://localhost:5001/api";
 
 function Login({ onLogin }) {
     const [username, setUsername] = useState('');
