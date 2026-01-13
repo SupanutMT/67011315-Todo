@@ -33,7 +33,7 @@ function App() {
         <div className="max-w-xl mx-auto px-4 py-4 flex items-center gap-3">
             
             {/* Logo placeholder */}
-            <div className="w-20 h-20 rounded-xl bg-blue-600 flex items-center justify-center font-bold">
+            <div className="w-20 h-20 rounded-xl bg-white flex items-center justify-center font-bold">
             <img
                 src={cei_logo}
                 alt="App logo"

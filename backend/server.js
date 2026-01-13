@@ -55,7 +55,12 @@ app.post('/api/login', (req, res) => {
 // 1. READ: Get all todos for a specific user
 app.get('/api/todos/:username', (req, res) => {
     const { username } = req.params;
-    const sql = 'SELECT id, task, done, updated FROM todo WHERE username = ? ORDER BY id DESC';
+    const sql = `
+                SELECT id, task, status, target_at, updated
+                FROM todo
+                WHERE username = ?
+                ORDER BY status ASC, target_at DESC
+                `;
     db.query(sql, [username], (err, results) => {
         if (err) return res.status(500).send(err);
         res.json(results);
@@ -64,32 +69,69 @@ app.get('/api/todos/:username', (req, res) => {
 
 // 2. CREATE: Add a new todo item
 app.post('/api/todos', (req, res) => {
-    const { username, task } = req.body;
+    const { username, task, target_at } = req.body;
+
     if (!username || !task) {
         return res.status(400).send({ message: 'Username and task are required' });
     }
-    // Note: 'done' defaults to FALSE in the DB schema
-    const sql = 'INSERT INTO todo (username, task) VALUES (?, ?)';
-    db.query(sql, [username, task], (err, result) => {
+
+    const sql = `
+      INSERT INTO todo (username, task, target_at, status)
+      VALUES (?, ?, ?, 0)
+    `;
+
+    db.query(sql, [username, task, target_at], (err, result) => {
         if (err) return res.status(500).send(err);
-        // Return the created item details including the new ID
-        res.status(201).send({ id: result.insertId, username, task, done: 0, updated: new Date() });
+
+        res.status(201).send({
+            id: result.insertId,
+            username,
+            task,
+            status: 0,
+            target_at,         
+            updated: new Date()
+        });
     });
 });
 
-// 3. UPDATE: Toggle the 'done' status
+// 3. UPDATE: Toggle the 'status' of a task
 app.put('/api/todos/:id', (req, res) => {
-    const { id } = req.params;
-    const { done } = req.body; 
-    
-    const sql = 'UPDATE todo SET done = ? WHERE id = ?';
-    db.query(sql, [done, id], (err, result) => {
-        if (err) return res.status(500).send(err);
-        if (result.affectedRows === 0) {
-            return res.status(404).send({ message: 'Todo not found' });
-        }
-        res.send({ message: 'Todo updated successfully' });
-    });
+  const { id } = req.params;
+  const { status, target_at } = req.body;
+
+  // Build dynamic fields
+  const fields = [];
+  const values = [];
+
+  if (status !== undefined) {
+    fields.push("status = ?");
+    values.push(status);
+  }
+
+  if (target_at !== undefined) {
+    fields.push("target_at = ?");
+    values.push(target_at);
+  }
+
+  if (fields.length === 0) {
+    return res.status(400).send({ message: "No fields to update" });
+  }
+
+  const sql = `
+    UPDATE todo
+    SET ${fields.join(", ")}, updated = NOW()
+    WHERE id = ?
+  `;
+
+  values.push(id);
+
+  db.query(sql, values, (err, result) => {
+    if (err) return res.status(500).send(err);
+    if (result.affectedRows === 0) {
+      return res.status(404).send({ message: "Todo not found" });
+    }
+    res.send({ message: "Todo updated successfully" });
+  });
 });
 
 // 4. DELETE: Remove a todo item
