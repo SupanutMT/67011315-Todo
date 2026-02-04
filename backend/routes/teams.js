@@ -162,4 +162,43 @@ router.get("/", async (req, res) => {
   res.json(teams);
 });
 
+// ❌ Delete team (Admin only)
+router.delete("/:teamId", async (req, res) => {
+  const { teamId } = req.params;
+  const { admin_user_id } = req.body;
+
+  if (!admin_user_id) {
+    return res.status(400).json({ message: "admin_user_id required" });
+  }
+
+  try {
+    const db = getDb();
+
+    // 🔐 Verify admin
+    const [[team]] = await db.query(
+      "SELECT id FROM teams WHERE id = ? AND admin_user_id = ?",
+      [teamId, admin_user_id]
+    );
+
+    if (!team) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    // 🧹 Delete team todos
+    await db.query("DELETE FROM todo WHERE team_id = ?", [teamId]);
+
+    // 🧹 Delete team members
+    await db.query("DELETE FROM team_members WHERE team_id = ?", [teamId]);
+
+    // 🧹 Delete team
+    await db.query("DELETE FROM teams WHERE id = ?", [teamId]);
+
+    res.json({ message: "Team deleted successfully" });
+  } catch (err) {
+    console.error("Delete team error:", err);
+    res.status(500).json({ message: "Failed to delete team" });
+  }
+});
+
+
 module.exports = router;

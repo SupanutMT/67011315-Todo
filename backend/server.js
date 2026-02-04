@@ -178,6 +178,37 @@ app.get("/api/todos/user/:userId", async (req, res) => {
   }
 });
 
+app.get("/api/teams/:teamId/todos", async (req, res) => {
+  const { teamId } = req.params;
+  const { user_id } = req.query;
+
+  if (!user_id) {
+    return res.status(400).json({ message: "user_id required" });
+  }
+
+  try {
+    const db = getDb();
+
+    const [rows] = await db.query(
+      `
+      SELECT t.*
+      FROM todo t
+      JOIN team_members tm
+        ON t.team_id = tm.team_id
+      WHERE t.team_id = ?
+        AND tm.user_id = ?
+      ORDER BY t.status ASC, t.target_at ASC
+      `,
+      [teamId, user_id]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to fetch team todos" });
+  }
+});
+
 
 
 app.post("/api/todos", async (req, res) => {
@@ -280,22 +311,35 @@ app.put("/api/todos/:id", async (req, res) => {
 
 
 app.delete("/api/todos/:id", async (req, res) => {
+  const { team_id, user_id } = req.body;
+
   try {
     const db = getDb();
+
     const [result] = await db.query(
-      "DELETE FROM todo WHERE id = ?",
-      [req.params.id]
+      `
+      DELETE t
+      FROM todo t
+      JOIN team_members tm
+        ON t.team_id = tm.team_id
+      WHERE t.id = ?
+        AND t.team_id = ?
+        AND tm.user_id = ?
+      `,
+      [req.params.id, team_id, user_id]
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Todo not found" });
+      return res.status(404).json({ message: "Todo not found in this team" });
     }
 
     res.json({ message: "Todo deleted successfully" });
   } catch (err) {
-    res.status(500).send(err);
+    console.error(err);
+    res.status(500).json({ message: "Failed to delete todo" });
   }
 });
+
 
 // --------------------
 app.listen(port, () => {

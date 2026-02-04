@@ -227,16 +227,20 @@ function TodoList({ user }) {
     );
   };
 
-  // ✅ THIS WAS MISSING
-  const fetchTodos = async () => {
-    try {
-      const res = await fetch(`${API_URL}/todos/user/${user.id}`);
-      const data = await res.json();
-      setTodos(data);
-    } catch (err) {
-      console.error("Failed to fetch todos", err);
-    }
-  };
+
+const fetchTodos = async () => {
+  if (!teamId || !user?.id) return;
+
+  try {
+    const res = await fetch(
+      `${API_URL}/teams/${teamId}/todos?user_id=${user.id}`
+    );
+    const data = await res.json();
+    setTodos(data);
+  } catch (err) {
+    console.error("Failed to fetch team todos", err);
+  }
+};
 
   const fetchAllUsers = async () => {
   try {
@@ -326,7 +330,10 @@ function TodoList({ user }) {
     await fetch(`${API_URL}/todos/${id}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: user.id })
+      body: JSON.stringify({
+        user_id: user.id,
+        team_id: Number(teamId)
+      })
     });
 
     setTodos(todos.filter(t => t.id !== id));
