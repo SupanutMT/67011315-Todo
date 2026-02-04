@@ -1,105 +1,244 @@
 // server.js
-
 require("dotenv").config();
 
-const express = require('express');
-const mysql = require('mysql2');
-const cors = require('cors');
+const express = require("express");
+const cors = require("cors");
+const bcrypt = require("bcrypt");
+const axios = require("axios");
+const passport = require("passport");
+
+require("./config/passport");
+
+const { getDb } = require("./db");
 
 const app = express();
 const port = 5001;
 
-// Middleware setup
-app.use(cors()); // Allow cross-origin requests from React frontend
-app.use(express.json()); // Enable reading JSON data from request body
+// --------------------
+// Middleware
+// --------------------
+app.use(cors());
+app.use(express.json());
+app.use(passport.initialize());
+app.use(express.urlencoded({ extended: true }));
 
-// --- MySQL Connection Setup ---
-const db = mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER, // CHANGE THIS to your MySQL username
-    password: process.env.DB_PASSWORD, // CHANGE THIS to your MySQL password
-    database: process.env.DB_NAME // Ensure this matches your database name
+// OAuth routes
+app.use("/api/auth", require("./routes/auth"));
+
+// Team routes
+app.use("/api/teams", require("./routes/teams"));
+
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true });
 });
 
-db.connect(err => {
-    if (err) {
-        console.error('Error connecting to MySQL:', err);
-        return;
-    }
-    console.log('Connected to MySQL Database.');
+app.get("/api/users", async (req, res) => {
+  const db = getDb();
+  const [rows] = await db.query(
+    "SELECT id, full_name, username FROM users"
+  );
+  res.json(rows);
 });
+// --------------------
+// REGISTER
+// --------------------
+app.post("/api/register", async (req, res) => {
+  const { full_name, username, password } = req.body;
 
-// ------------------------------------
-// API: Authentication (Username Only)
-// ------------------------------------
-app.post('/api/login', (req, res) => {
-    // In this simplified system, we grant "login" access if a username is provided.
-    // WARNING: This is highly insecure and should not be used in a real-world app.
-    const { username } = req.body;
-    if (!username) {
-        return res.status(400).send({ message: 'Username is required' });
-    }
-    
-    // Success response includes the username
-    res.send({ 
-        success: true, 
-        message: 'Login successful', 
-        user: { username: username }
+  if (!full_name || !username || !password) {
+    return res.status(400).json({ message: "Missing required fields" });
+  }
+
+  try {
+    const db = getDb();
+    const password_hash = await bcrypt.hash(password, 10);
+
+    const defaultAvatar = "/default-avatar.png";
+
+    const [result] = await db.query(
+      `
+      INSERT INTO users (
+        full_name,
+        username,
+        password_hash,
+        profile_image,
+        auth_provider
+      )
+      VALUES (?, ?, ?, ?, 'local')
+      `,
+      [full_name, username, password_hash, defaultAvatar]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      full_name,
+      username,
+      profile_image: defaultAvatar,
+      auth_provider: "local",
     });
+  } catch (err) {
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ message: "Username already exists" });
+    }
+    console.error(err);
+    res.status(500).json(err);
+  }
 });
 
-// ------------------------------------
-// API: Todo List (CRUD Operations)
-// ------------------------------------
+// --------------------
+// LOGIN (Username + CAPTCHA)
+// --------------------
+app.post("/api/login", async (req, res) => {
+  const { username, password, captchaToken } = req.body;
 
-// 1. READ: Get all todos for a specific user
-app.get('/api/todos/:username', (req, res) => {
-    const { username } = req.params;
-    const sql = `
-                SELECT id, task, status, target_at, updated
-                FROM todo
-                WHERE username = ?
-                ORDER BY status ASC, target_at DESC
-                `;
-    db.query(sql, [username], (err, results) => {
-        if (err) return res.status(500).send(err);
-        res.json(results);
-    });
-});
+  if (!captchaToken) {
+    return res.status(400).json({ message: "CAPTCHA required" });
+  }
 
-// 2. CREATE: Add a new todo item
-app.post('/api/todos', (req, res) => {
-    const { username, task, target_at } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ message: "Username and password required" });
+  }
 
-    if (!username || !task) {
-        return res.status(400).send({ message: 'Username and task are required' });
+  try {
+    // CAPTCHA verify
+    const captchaRes = await axios.post(
+      "https://www.google.com/recaptcha/api/siteverify",
+      null,
+      {
+        params: {
+          secret: process.env.RECAPTCHA_SECRET,
+          response: captchaToken,
+        },
+      }
+    );
+
+    if (!captchaRes.data.success) {
+      return res.status(403).json({ message: "CAPTCHA verification failed" });
     }
 
-    const sql = `
-      INSERT INTO todo (username, task, target_at, status)
-      VALUES (?, ?, ?, 0)
-    `;
+    const db = getDb();
 
-    db.query(sql, [username, task, target_at], (err, result) => {
-        if (err) return res.status(500).send(err);
+    const [users] = await db.query(
+      "SELECT id, username, password_hash, full_name FROM users WHERE username = ?",
+      [username]
+    );
 
-        res.status(201).send({
-            id: result.insertId,
-            username,
-            task,
-            status: 0,
-            target_at,         
-            updated: new Date()
-        });
+    if (users.length === 0) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    const user = users[0];
+    const isMatch = await bcrypt.compare(password, user.password_hash);
+
+    if (!isMatch) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        full_name: user.full_name,
+      },
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Login failed" });
+  }
 });
 
-// 3. UPDATE: Toggle the 'status' of a task
-app.put('/api/todos/:id', (req, res) => {
-  const { id } = req.params;
+// --------------------
+// TODOS
+// --------------------
+app.get("/api/todos/user/:userId", async (req, res) => {
+  const userId = req.params.userId;
+
+  try {
+    const db = getDb();
+    const [rows] = await db.query(
+      `
+      SELECT DISTINCT t.id, t.task, t.status, t.target_at, t.updated,
+                      t.team_id, t.user_id, t.created_by
+      FROM todo t
+      LEFT JOIN team_members tm ON t.team_id = tm.team_id
+      WHERE
+        (t.team_id IS NULL AND t.user_id = ?)
+        OR
+        (t.team_id IS NOT NULL AND (tm.user_id = ? OR t.user_id = ?))
+      ORDER BY t.status ASC, t.target_at ASC
+      `,
+      [userId, userId, userId]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to fetch todos" });
+  }
+});
+
+
+
+app.post("/api/todos", async (req, res) => {
+  const {
+    user_id,
+    task,
+    target_at,
+    team_id,
+    created_by
+  } = req.body;
+
+  if (!user_id || !task || !created_by) {
+    return res.status(400).json({
+      message: "user_id, task, and created_by are required"
+    });
+  }
+
+  try {
+    const db = getDb();
+
+    const [result] = await db.query(
+      `
+      INSERT INTO todo (
+        user_id,
+        task,
+        target_at,
+        status,
+        team_id,
+        created_by
+      )
+      VALUES (?, ?, ?, 0, ?, ?)
+      `,
+      [
+        user_id,
+        task,
+        target_at || null,
+        team_id || null,
+        created_by
+      ]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      user_id,
+      task,
+      status: 0,
+      target_at,
+      team_id: team_id || null,
+      created_by,
+      updated: new Date(),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to create todo" });
+  }
+});
+
+
+
+app.put("/api/todos/:id", async (req, res) => {
   const { status, target_at } = req.body;
-
-  // Build dynamic fields
   const fields = [];
   const values = [];
 
@@ -114,40 +253,51 @@ app.put('/api/todos/:id', (req, res) => {
   }
 
   if (fields.length === 0) {
-    return res.status(400).send({ message: "No fields to update" });
+    return res.status(400).json({ message: "No fields to update" });
   }
 
-  const sql = `
-    UPDATE todo
-    SET ${fields.join(", ")}, updated = NOW()
-    WHERE id = ?
-  `;
+  try {
+    const db = getDb();
+    const [result] = await db.query(
+      `
+      UPDATE todo
+      SET ${fields.join(", ")}, updated = NOW()
+      WHERE id = ?
+      `,
+      [...values, req.params.id]
+    );
 
-  values.push(id);
-
-  db.query(sql, values, (err, result) => {
-    if (err) return res.status(500).send(err);
     if (result.affectedRows === 0) {
-      return res.status(404).send({ message: "Todo not found" });
+      return res.status(404).json({ message: "Todo not found" });
     }
-    res.send({ message: "Todo updated successfully" });
-  });
+
+    res.json({ message: "Todo updated successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to update todo" });
+  }
 });
 
-// 4. DELETE: Remove a todo item
-app.delete('/api/todos/:id', (req, res) => {
-    const { id } = req.params;
-    const sql = 'DELETE FROM todo WHERE id = ?';
-    db.query(sql, [id], (err, result) => {
-        if (err) return res.status(500).send(err);
-        if (result.affectedRows === 0) {
-            return res.status(404).send({ message: 'Todo not found' });
-        }
-        res.send({ message: 'Todo deleted successfully' });
-    });
+
+app.delete("/api/todos/:id", async (req, res) => {
+  try {
+    const db = getDb();
+    const [result] = await db.query(
+      "DELETE FROM todo WHERE id = ?",
+      [req.params.id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Todo not found" });
+    }
+
+    res.json({ message: "Todo deleted successfully" });
+  } catch (err) {
+    res.status(500).send(err);
+  }
 });
 
-// Start the server
+// --------------------
 app.listen(port, () => {
-    console.log(`Server listening at http://localhost:${port}`);
+  console.log(`🚀 Server running at http://localhost:${port}`);
 });
